@@ -8,15 +8,15 @@ html,body{height:100%;margin:0;background:#020205;color:var(--fg);font-family:sy
 canvas{display:block;width:100%;height:100%}
 canvas.vert{width:auto;height:100%;max-width:100vw;max-height:100vh;aspect-ratio:9/16;box-shadow:0 0 30px rgba(0,0,0,.8)}
 #gear{position:fixed;top:calc(8px + env(safe-area-inset-top,0px));right:10px;width:40px;height:40px;border-radius:50%;border:1px solid var(--bd);background:var(--card);color:var(--fg);font-size:20px;cursor:pointer;z-index:2}
-#ui{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(10px + env(safe-area-inset-bottom,0px));width:min(580px,calc(100% - 20px));background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:10px 12px;backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:8px;font-size:14px;z-index:2}
+#ui{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(10px + env(safe-area-inset-bottom,0px));width:min(600px,calc(100% - 20px));background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:10px 12px;backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:7px;font-size:14px;z-index:2}
 #ui.hide{display:none}
 .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-button.b{background:rgba(255,255,255,.08);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:7px 11px;font-size:14px;cursor:pointer}
+button.b{background:rgba(255,255,255,.08);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:6px 10px;font-size:13px;cursor:pointer}
 button.b.on{background:var(--ac);color:#1a1530;border-color:var(--ac);font-weight:700}
 button.b.rec{background:#e11d48;border-color:#fb7185;color:#fff;font-weight:700}
-input[type=number],input[type=text]{background:rgba(255,255,255,.08);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:7px 9px;font-size:14px;min-width:0}
-input[type=number]{width:70px}input[type=text]{flex:1}
-label{display:flex;gap:4px;align-items:center;cursor:pointer}
+input[type=number],input[type=text]{background:rgba(255,255,255,.08);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:6px 9px;font-size:13px;min-width:0}
+input[type=number]{width:66px}input[type=text]{flex:1}
+label{display:flex;gap:4px;align-items:center;cursor:pointer;font-size:13px}
 </style></head><body>
 <canvas id="c"></canvas>
 <button id="gear" title="Меню">⚙</button>
@@ -28,11 +28,15 @@ label{display:flex;gap:4px;align-items:center;cursor:pointer}
  <div class="row">
   <button class="b" id="col">🎨 Кольори</button>
   <button class="b" id="rst">↻ Заново</button>
-  <button class="b" id="recBtn">⏺ Запис</button>
   <label><input type="checkbox" id="vert">9:16 (1080p)</label>
   <label><input type="checkbox" id="snd" checked>Звук</label>
   <label><input type="checkbox" id="auto" checked>Автоповтор</label>
-  <label><input type="checkbox" id="autoRec">Автозапис</label>
+ </div>
+ <div class="row" id="recRow">
+  <button class="b" id="recBtn">⏺ Запис</button>
+  <button class="b on" data-rm="one">1 файл</button>
+  <button class="b" data-rm="join">Все в 1</button>
+  <button class="b" data-rm="multi">Кілька файлів</button>
  </div>
 </div>
 <script>
@@ -42,9 +46,8 @@ const M={rings:{g:1,w:.68,dw:.032,br:.032,grow:0,alt:0},grow:{g:1,w:.62,dw:.034,
 const NOTES=[261.63,293.66,329.63,392,440,523.25,587.33,659.25,783.99,880,987.77,1046.5];
 const S={mode:'rings',T:30,t:0,state:'run',done:0,j:0,acc:0,note:0,vidCount:0};
 let W,H,R,cx,cy,dpr,rings=[],B={},pal={},parts=[],trail=[],n=12,rin=.22,sp=0,th=.016,brMin=.03,brMax=.08;
-let actx=null,recDest=null,mr=null,recChunks=[],recording=false,recStopping=false;
+let actx=null,recDest=null,mr=null,recChunks=[],recording=false,recStopping=false,manualStop=false,recMode='one';
 
-// Фоновий воркер, щоб 60 FPS не зупинялися у фоновій вкладці
 const wk=new Worker(URL.createObjectURL(new Blob([`
  let id=null;
  onmessage=e=>{
@@ -79,7 +82,6 @@ function unlockAudio(){
   try{
    actx=new (window.AudioContext||window.webkitAudioContext)();
    recDest=actx.createMediaStreamDestination();
-   // Ледь чутний ультратихий генератор не дає Chrome "заморозити" фонову вкладку
    const ko=actx.createOscillator(),kg=actx.createGain();
    ko.frequency.value=20;kg.gain.value=.00001;
    ko.connect(kg);kg.connect(actx.destination);ko.start();
@@ -215,6 +217,7 @@ function finish(){
 function startRec(){
  unlockAudio();
  if(recording)return;
+ manualStop=false;
  start(true);
  const mimes=['video/mp4;codecs=avc1,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
  const mime=mimes.find(m=>window.MediaRecorder&&MediaRecorder.isTypeSupported(m))||'';
@@ -231,14 +234,15 @@ function startRec(){
   a.href=URL.createObjectURL(new Blob(recChunks,{type:mime||'video/webm'}));
   a.download=`ball-escape-${++S.vidCount}.${ext}`;a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),15000);
-  if($('autoRec').checked)startRec();
+  if(recMode==='multi'&&!manualStop)startRec();
  };
  mr.start(250);
  recording=true;recStopping=false;
  $('recBtn').classList.add('rec');$('recBtn').textContent='⏹ Стоп';
 }
 
-function stopRec(){
+function stopRec(isManual){
+ if(isManual)manualStop=true;
  if(mr&&mr.state==='recording'&&!recStopping){recStopping=true;mr.stop()}
 }
 
@@ -302,8 +306,10 @@ function tickFrame(now){
  else{
   S.done+=dt;B.vy+=G*dt;B.x+=B.vx*dt;B.y+=B.vy*dt;
   trail.push({x:B.x,y:B.y,r:B.r});if(trail.length>24)trail.shift();
-  if(recording&&!recStopping&&S.done>=1.6)stopRec();
-  else if(!recording&&$('auto').checked&&S.done>=2.4)start(true);
+  if(recording&&!recStopping){
+   if(recMode==='join'){if(S.done>=2.2)start(true)}
+   else if(S.done>=1.6)stopRec(false);
+  }else if(!recording&&$('auto').checked&&S.done>=2.4)start(true);
  }
  const dn=S.state==='done';
  parts=parts.filter(p=>(p.x+=p.vx*dt,p.y+=p.vy*dt,p.vy+=(dn?G*.45:.25)*dt,p.l-=dt*p.fade*(dn?.45:1),p.l>0));
@@ -326,8 +332,11 @@ $('rst').onclick=()=>start(false);
 $('col').onclick=()=>newPal();
 $('vert').onchange=resize;
 $('sec').onchange=()=>start(false);
-$('recBtn').onclick=()=>recording?stopRec():startRec();
-$('autoRec').onchange=()=>{if($('autoRec').checked&&!recording)startRec()};
+$('recBtn').onclick=()=>recording?stopRec(true):startRec();
+document.querySelectorAll('#recRow [data-rm]').forEach(b=>b.onclick=()=>{
+ recMode=b.dataset.rm;
+ document.querySelectorAll('#recRow [data-rm]').forEach(x=>x.classList.toggle('on',x===b));
+});
 document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{$('sec').value=b.dataset.s;start(false)});
 document.querySelectorAll('#modes button').forEach(b=>b.onclick=()=>{
  S.mode=b.dataset.m;document.querySelectorAll('#modes button').forEach(x=>x.classList.toggle('on',x===b));start(true);
