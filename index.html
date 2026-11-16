@@ -8,7 +8,7 @@ html,body{height:100%;margin:0;background:#020205;color:var(--fg);font-family:sy
 canvas{display:block;width:100%;height:100%}
 canvas.vert{width:auto;height:100%;max-width:100vw;max-height:100vh;aspect-ratio:9/16;box-shadow:0 0 30px rgba(0,0,0,.8)}
 #gear{position:fixed;top:calc(8px + env(safe-area-inset-top,0px));right:10px;width:40px;height:40px;border-radius:50%;border:1px solid var(--bd);background:var(--card);color:var(--fg);font-size:20px;cursor:pointer;z-index:2}
-#ui{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(10px + env(safe-area-inset-bottom,0px));width:min(640px,calc(100% - 20px));background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:10px 12px;backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:7px;font-size:14px;z-index:2;max-height:78vh;overflow-y:auto}
+#ui{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(10px + env(safe-area-inset-bottom,0px));width:min(640px,calc(100% - 20px));background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:10px 12px;backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:7px;font-size:14px;z-index:2;max-height:80vh;overflow-y:auto}
 #ui.hide{display:none}
 .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 button.b{background:rgba(255,255,255,.08);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:6px 10px;font-size:13px;cursor:pointer}
@@ -22,7 +22,9 @@ label{display:flex;gap:4px;align-items:center;cursor:pointer;font-size:13px}
 <button id="gear" title="Меню">⚙</button>
 <div id="ui">
  <div class="row"><span>Секунд:</span><input id="sec" type="number" min="3" max="600" value="30">
-  <button class="b chip" data-s="10">10</button><button class="b chip" data-s="15">15</button><button class="b chip" data-s="30">30</button><button class="b chip" data-s="60">60</button></div>
+  <button class="b chip" data-s="10">10</button><button class="b chip" data-s="15">15</button><button class="b chip" data-s="30">30</button><button class="b chip" data-s="60">60</button>
+  <label title="Якщо увімкнено — кулька може вирватися значно раніше кінця таймера"><input type="checkbox" id="early">Може раніше</label>
+ </div>
  <div class="row" id="modes">
   <button class="b on" data-m="rings">◎ Кільця</button>
   <button class="b" data-m="grow">⬤ Росте</button>
@@ -41,6 +43,12 @@ label{display:flex;gap:4px;align-items:center;cursor:pointer;font-size:13px}
   <button class="b" data-d="2.9">3x</button>
   <button class="b" id="bamBtn">💥 Бам-реверс</button>
   <button class="b" id="spiralBtn">🌀 Спіраль</button>
+ </div>
+ <div class="row" id="midiRow">
+  <button class="b" id="midiBtn">🎵 Імпорт .midi</button>
+  <input id="midiFile" type="file" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
+  <button class="b" id="midiClr" style="display:none" title="Скинути MIDI">✕</button>
+  <span id="midiInfo" style="font-size:12px;opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px">Стандартна гама</span>
  </div>
  <div class="row">
   <input id="title" type="text" value="THE BALL HAS {T} SECONDS TO ESCAPE">
@@ -90,9 +98,9 @@ const HOOKS={
  hits: ['BREAK ALL RINGS IN {T} SECONDS!','NO GAPS! SMASH TO ESCAPE ({T}s)','SATISFYING RING BREAKER ({T}s)']
 };
 const NOTES=[261.63,293.66,329.63,392,440,523.25,587.33,659.25,783.99,880,987.77,1046.5];
-const S={mode:'rings',T:30,t:0,state:'run',done:0,j:0,acc:0,note:0,vidCount:0,spdMult:1,gAng:PI/2,winner:-1,eMult:1,hookIdx:0,autoHook:false,dens:1,bam:false,spiral:false};
+const S={mode:'rings',T:30,t:0,state:'run',done:0,j:0,acc:0,note:0,vidCount:0,spdMult:1,gAng:PI/2,winner:-1,eMult:1,hookIdx:0,autoHook:false,dens:1,bam:false,spiral:false,midiIdx:0,midiSpd:1};
 let W,H,R,cx,cy,dpr,rings=[],balls=[],pal={},parts=[],waves=[],shake=0,bamPulse=0,n=12,rin=.22,sp=0,th=.016,brMin=.03,brMax=.08;
-let actx=null,recDest=null,mr=null,recChunks=[],recording=false,recStopping=false,manualStop=false,recMode='one';
+let midiSeq=[],actx=null,recDest=null,comp=null,mr=null,recChunks=[],recording=false,recStopping=false,manualStop=false,recMode='one';
 
 const wk=new Worker(URL.createObjectURL(new Blob([`
  let id=null;
@@ -101,6 +109,79 @@ const wk=new Worker(URL.createObjectURL(new Blob([`
   if(e.data==='stop'&&id){clearInterval(id);id=null;}
  };
 `],{type:'application/javascript'})));
+
+function parseMidi(buf){
+ const d=new DataView(buf);
+ let p=0;
+ const str=k=>{let s='';for(let i=0;i<k;i++)s+=String.fromCharCode(d.getUint8(p++));return s};
+ const u16=()=>{const v=d.getUint16(p);p+=2;return v};
+ const u32=()=>{const v=d.getUint32(p);p+=4;return v};
+ const vlq=()=>{let v=0,b;do{b=d.getUint8(p++);v=(v<<7)|(b&127)}while(b&128);return v};
+ if(str(4)!=='MThd')throw new Error('Невірний MIDI-файл');
+ const hLen=u32();u16();const nTrk=u16(),div=u16();
+ p=8+hLen;
+ const evs=[];
+ for(let t=0;t<nTrk&&p+8<=d.byteLength;t++){
+  if(str(4)!=='MTrk')break;
+  const tLen=u32(),end=Math.min(d.byteLength,p+tLen);
+  let tick=0,run=0;
+  while(p<end){
+   tick+=vlq();
+   let st=d.getUint8(p);
+   if(st<0x80)st=run;else{p++;if(st<0xF0)run=st}
+   if(st===0xFF){
+    const mt=d.getUint8(p++),ml=vlq();
+    if(mt===0x51&&ml===3){
+     const us=(d.getUint8(p)<<16)|(d.getUint8(p+1)<<8)|d.getUint8(p+2);
+     evs.push({tick,type:'tempo',us});
+    }
+    p+=ml;
+   }else if(st===0xF0||st===0xF7){
+    p+=vlq();
+   }else{
+    const tp=st&0xF0,ch=st&0x0F;
+    if(tp===0xC0||tp===0xD0){p+=1}
+    else{
+     const d1=d.getUint8(p++),d2=d.getUint8(p++);
+     if(tp===0x90&&d2>0)evs.push({tick,type:'on',ch,note:d1,vel:d2});
+     else if(tp===0x80||(tp===0x90&&d2===0))evs.push({tick,type:'off',ch,note:d1});
+    }
+   }
+  }
+  p=end;
+ }
+ evs.sort((a,b)=>a.tick-b.tick||(a.type==='tempo'?-1:1));
+ const smpte=(div&0x8000)!==0;
+ let spt=smpte?1/((-(div<<16>>24))*(div&0xFF)):(.5/div);
+ let curT=0,lastTick=0;
+ const active=new Map(),raw=[];
+ for(const e of evs){
+  curT+=(e.tick-lastTick)*spt;lastTick=e.tick;
+  if(e.type==='tempo'&&!smpte)spt=(e.us/1e6)/div;
+  else if(e.type==='on')active.set((e.ch<<8)|e.note,{t:curT,ch:e.ch,note:e.note,vel:e.vel});
+  else if(e.type==='off'){
+   const k=(e.ch<<8)|e.note,on=active.get(k);
+   if(on){raw.push({t:on.t,ch:on.ch,note:on.note,vel:on.vel,dur:Math.max(.1,Math.min(.48,curT-on.t))});active.delete(k)}
+  }
+ }
+ for(const on of active.values())raw.push({t:on.t,ch:on.ch,note:on.note,vel:on.vel,dur:.24});
+ let mel=raw.filter(x=>x.ch!==9);
+ if(!mel.length)mel=raw;
+ mel.sort((a,b)=>a.t-b.t||a.note-b.note);
+ const steps=[];
+ for(const nObj of mel){
+  const f=440*Math.pow(2,(nObj.note-69)/12);
+  if(steps.length&&nObj.t-steps[steps.length-1].t<.028){
+   const g=steps[steps.length-1];
+   if(g.notes.length<4&&!g.notes.some(x=>Math.abs(x.f-f)<1))g.notes.push({f,vel:nObj.vel,dur:nObj.dur});
+  }else steps.push({t:nObj.t,notes:[{f,vel:nObj.vel,dur:nObj.dur}]});
+ }
+ for(let i=0;i<steps.length;i++){
+  const dtN=i<steps.length-1?Math.max(.04,steps[i+1].t-steps[i].t):.25;
+  steps[i].spd=Math.max(.82,Math.min(1.42,.26/Math.max(.14,Math.min(.45,dtN))));
+ }
+ return steps;
+}
 
 function resize(){
  if($('vert').checked){
@@ -141,6 +222,10 @@ function unlockAudio(){
   try{
    actx=new (window.AudioContext||window.webkitAudioContext)();
    recDest=actx.createMediaStreamDestination();
+   comp=actx.createDynamicsCompressor();
+   comp.threshold.value=-14;comp.knee.value=12;comp.ratio.value=6;comp.attack.value=.003;comp.release.value=.15;
+   comp.connect(actx.destination);
+   comp.connect(recDest);
    const ko=actx.createOscillator(),kg=actx.createGain();
    ko.frequency.value=20;kg.gain.value=.00001;
    ko.connect(kg);kg.connect(actx.destination);ko.start();
@@ -151,23 +236,39 @@ function unlockAudio(){
 }
 
 function tone(f,dur=.14,vol=.09,type='sine'){
- if(!$('snd').checked||!actx)return;
+ if(!$('snd').checked||!actx||!comp)return;
  const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain();
  o.type=type;o.frequency.setValueAtTime(f,t);
  g.gain.setValueAtTime(vol,t);
  g.gain.exponentialRampToValueAtTime(.0008,t+dur);
- o.connect(g);g.connect(actx.destination);
- if(recDest)g.connect(recDest);
+ o.connect(g);g.connect(comp);
  o.start(t);o.stop(t+dur+.01);
 }
 
+function playMidiStep(stepObj,isBreak){
+ if(!$('snd').checked||!actx||!comp)return;
+ const t=actx.currentTime,sc=1/Math.sqrt(stepObj.notes.length);
+ for(const nt of stepObj.notes){
+  const o1=actx.createOscillator(),o2=actx.createOscillator(),g=actx.createGain(),g2=actx.createGain();
+  o1.type='triangle';o1.frequency.setValueAtTime(nt.f,t);
+  o2.type='sine';o2.frequency.setValueAtTime(nt.f*2,t);
+  g2.gain.value=.22;
+  const v=Math.min(.14,(.04+.075*(nt.vel/127))*sc*(isBreak?1.2:1));
+  const dur=Math.max(.13,nt.dur);
+  g.gain.setValueAtTime(.0001,t);
+  g.gain.linearRampToValueAtTime(v,t+.006);
+  g.gain.exponentialRampToValueAtTime(.0008,t+dur);
+  o1.connect(g);o2.connect(g2);g2.connect(g);g.connect(comp);
+  o1.start(t);o2.start(t);o1.stop(t+dur+.02);o2.stop(t+dur+.02);
+ }
+}
+
 function thump(vol=.08){
- if(!$('snd').checked||!actx)return;
+ if(!$('snd').checked||!actx||!comp)return;
  const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain();
  o.type='sine';o.frequency.setValueAtTime(105,t);o.frequency.exponentialRampToValueAtTime(34,t+.12);
  g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+.13);
- o.connect(g);g.connect(actx.destination);
- if(recDest)g.connect(recDest);
+ o.connect(g);g.connect(comp);
  o.start(t);o.stop(t+.14);
 }
 
@@ -204,7 +305,16 @@ function makeSim(cfg){
   const a2=cfg.bAng+2.1;
   bs.push({x:-bs[0].x,y:-bs[0].y,vx:Math.cos(a2)*cfg.bSpd,vy:Math.sin(a2)*cfg.bSpd,r:brMin,tr:brMin,colIdx:1,trail:[]});
  }
- return {rs,bs,j:0,t:0,spdMult:1,gAng:PI/2,winner:-1,eMult:cfg.eMult||1};
+ return {rs,bs,j:0,t:0,spdMult:1,gAng:PI/2,winner:-1,eMult:cfg.eMult||1,midiIdx:0,midiSpd:1};
+}
+
+function stepMidi(sim,isBreak,fx){
+ if(!midiSeq.length)return false;
+ const st=midiSeq[sim.midiIdx%midiSeq.length];
+ sim.midiIdx++;
+ sim.midiSpd=st.spd;
+ if(fx)playMidiStep(st,isBreak);
+ return true;
 }
 
 function onLayerBreak(sim,rg,b,m,fx){
@@ -216,10 +326,11 @@ function onLayerBreak(sim,rg,b,m,fx){
   const spAng=.42*(sim.bs.length%2?1:-1),cs=Math.cos(spAng),sn=Math.sin(spAng);
   sim.bs.push({x:b.x*.97,y:b.y*.97,vx:b.vx*cs-b.vy*sn,vy:b.vx*sn+b.vy*cs,r:b.r,tr:b.tr,colIdx:(sim.bs.length)%2,trail:[]});
  }
+ const usedMidi=stepMidi(sim,true,fx);
  if(fx){
   const cCol=m.duel?DUEL_COLS[b.colIdx]:col(rg.k);
   ringBurst(rg,m,cCol);
-  tone(520+Math.min(sim.j,25)*24,.16,.095,'triangle');
+  if(!usedMidi)tone(520+Math.min(sim.j,25)*24,.16,.095,'triangle');
   thump(S.bam?.13:.075);
  }
 }
@@ -227,7 +338,7 @@ function onLayerBreak(sim,rg,b,m,fx){
 function simStep(sim,dt,fx){
  const m=M[S.mode];
  sim.t+=dt;
- const wMul=m.speed?(1+(sim.spdMult-1)*.65):1;
+ const wMul=(m.speed?(1+(sim.spdMult-1)*.65):1)*(midiSeq.length?sim.midiSpd:1);
  for(let i=sim.j;i<n;i++)sim.rs[i].a+=sim.rs[i].w*wMul*dt;
  const gx=Math.cos(sim.gAng)*G,gy=Math.sin(sim.gAng)*G;
 
@@ -240,7 +351,11 @@ function simStep(sim,dt,fx){
    const rvx=b1.vx-b0.vx,rvy=b1.vy-b0.vy,vn=rvx*nx+rvy*ny;
    if(vn<0){
     b0.vx+=vn*nx;b0.vy+=vn*ny;b1.vx-=vn*nx;b1.vy-=vn*ny;
-    if(fx){sparkBurst((b0.x+b1.x)*.5,(b0.y+b1.y)*.5,7,.5,'#fff',1.5);tone(NOTES[(S.note++)%NOTES.length]*1.25,.07,.055,'triangle')}
+    const usedMidi=stepMidi(sim,false,fx);
+    if(fx){
+     sparkBurst((b0.x+b1.x)*.5,(b0.y+b1.y)*.5,7,.5,'#fff',1.5);
+     if(!usedMidi)tone(NOTES[(S.note++)%NOTES.length]*1.25,.07,.055,'triangle');
+    }
    }
   }
  }
@@ -273,19 +388,22 @@ function simStep(sim,dt,fx){
      if(m.speed)sim.spdMult=Math.min(2.15,sim.spdMult+.045);
      if(m.flip){for(let k=sim.j;k<n;k++)sim.rs[k].w=-sim.rs[k].w}
      const pot=gx*b.x+gy*b.y,K=.5*(b.vx*b.vx+b.vy*b.vy),E=K+pot;
-     const Et=(.85+1.85*rg.r)*(m.speed?sim.spdMult*sim.spdMult:1)*sim.eMult;
+     const Et=(.85+1.85*rg.r)*(m.speed?sim.spdMult*sim.spdMult:1)*sim.eMult*(midiSeq.length?sim.midiSpd:1);
      const Kn=Math.max(.25,E+(Et-E)*.38-pot);
      if(K>1e-5){const sc=Math.sqrt(Kn/K);b.vx*=sc;b.vy*=sc}
      if(m.hits){
       rg.hp--;
       if(rg.hp<=0){onLayerBreak(sim,rg,b,m,fx);continue}
      }
+     const usedMidi=stepMidi(sim,false,fx);
      if(fx){
       rg.flash=1;
       const spCol=m.duel?DUEL_COLS[b.colIdx]:col(rg.k);
       sparkBurst(b.x+nx*b.r,b.y+ny*b.r,6,.48,spCol,1.45);
-      const pitchMul=m.speed?(1+(sim.spdMult-1)*.35):(m.duel?(b.colIdx?.85:1.12):1);
-      tone(NOTES[S.note%NOTES.length]*pitchMul,.11,.07,'sine');S.note++;
+      if(!usedMidi){
+       const pitchMul=m.speed?(1+(sim.spdMult-1)*.35):(m.duel?(b.colIdx?.85:1.12):1);
+       tone(NOTES[S.note%NOTES.length]*pitchMul,.11,.07,'sine');S.note++;
+      }
      }
     }
    }
@@ -296,7 +414,7 @@ function simStep(sim,dt,fx){
 }
 
 function findPlan(){
- const m=M[S.mode];
+ const m=M[S.mode],early=$('early').checked;
  DT=S.dens>1?1/180:1/120;
  const nBase=m.hits?Math.max(4,Math.min(13,Math.round(3+S.T*.24))):Math.max(4,Math.min(20,Math.round(3+S.T*.28)));
  n=Math.min(m.hits?28:48,Math.max(4,Math.round(nBase*S.dens)));
@@ -306,17 +424,18 @@ function findPlan(){
  brMin=Math.min(m.br,Math.max(.015,sp*1.15));
  brMax=m.grow?Math.min(.095,Math.max(.05,sp*1.4)):brMin;
 
- const avgR=(rin+1)*.5,pNeed=n*(1.1*avgR/1.75)/Math.max(2,S.T*.9);
+ const targetT=early?(S.T*(.32+Math.random()*.60)):Math.max(S.T*.72,S.T-1.8);
+ const avgR=(rin+1)*.5,pNeed=n*(1.1*avgR/1.75)/Math.max(2,targetT);
  const minHv=m.g===2?.12:(S.T>=40?.13:.17);
- const maxHv=m.g===2?.62:(S.dens>1?1.25:.78);
+ const maxHv=m.g===2?.62:(S.dens>1||early?1.25:.78);
  let baseHv=Math.max(minHv,Math.min(maxHv*.85,(pNeed*PI/Math.max(1,m.g))+(brMin+brMax)*.25/avgR));
  if(m.grow)baseHv=Math.max(baseHv,S.T>=45?.22:.30);
  if(m.duel||m.clone)baseHv=Math.max(.13,baseHv*.70);
  if(m.speed)baseHv=Math.max(.14,baseHv*.76);
- const hpTarget=m.hits?Math.max(1,(S.T*2.1)/n):1;
+ const hpTarget=m.hits?Math.max(1,(targetT*2.15)/n):1;
 
  let best=null,bestScore=1e9,tries=0;
- const tStart=performance.now(),targetT=Math.max(S.T*.72,S.T-1.8),tBudget=(m.clone||m.duel||S.dens>1||S.T>45)?75:38;
+ const tStart=performance.now(),tBudget=(m.clone||m.duel||S.dens>1||S.T>45)?75:38;
  for(let pass=0;pass<4&&(!best||bestScore>S.T*.18);pass++){
   const hvMult=pass===0?1:(pass===1?.72:(pass===2?1.32:1.75));
   for(let s=0;s<40;s++){
@@ -361,7 +480,7 @@ function start(np){
  S.T=Math.max(3,+$('sec').value||30);
  const sim=makeSim(findPlan());
  rings=sim.rs;balls=sim.bs;S.j=0;S.t=0;S.acc=0;S.state='run';S.done=0;S.note=0;
- S.spdMult=1;S.gAng=PI/2;S.winner=-1;S.eMult=sim.eMult;
+ S.spdMult=1;S.gAng=PI/2;S.winner=-1;S.eMult=sim.eMult;S.midiIdx=0;S.midiSpd=1;
  parts=[];waves=[];shake=0;bamPulse=0;
 }
 
@@ -381,10 +500,18 @@ function finish(winIdx){
  const fc=M[S.mode].duel?DUEL_COLS[wb.colIdx]:null;
  shake=10;bamPulse=1;
  sparkBurst(wb.x,wb.y,140,1.7,fc);
- tone(523.25,.18,.11,'triangle');thump(.11);
- setTimeout(()=>tone(659.25,.18,.11,'triangle'),90);
- setTimeout(()=>tone(783.99,.25,.12,'triangle'),180);
- setTimeout(()=>tone(1046.5,.38,.13,'triangle'),270);
+ thump(.11);
+ if(midiSeq.length){
+  for(let k=0;k<4;k++){
+   const st=midiSeq[(S.midiIdx+k)%midiSeq.length];
+   setTimeout(()=>playMidiStep(st,true),k*85);
+  }
+ }else{
+  tone(523.25,.18,.11,'triangle');
+  setTimeout(()=>tone(659.25,.18,.11,'triangle'),90);
+  setTimeout(()=>tone(783.99,.25,.12,'triangle'),180);
+  setTimeout(()=>tone(1046.5,.38,.13,'triangle'),270);
+ }
 }
 
 function startRec(){
@@ -421,21 +548,21 @@ function stopRec(isManual){
 
 function step(dt){
  S.acc+=dt;
- const sim={rs:rings,bs:balls,j:S.j,t:S.t,spdMult:S.spdMult,gAng:S.gAng,winner:S.winner,eMult:S.eMult};
+ const sim={rs:rings,bs:balls,j:S.j,t:S.t,spdMult:S.spdMult,gAng:S.gAng,winner:S.winner,eMult:S.eMult,midiIdx:S.midiIdx,midiSpd:S.midiSpd};
  while(S.acc>=DT){
   simStep(sim,DT,true);S.acc-=DT;
   if(S.state==='run'&&sim.winner>=0){
-   S.j=sim.j;S.t=sim.t;S.spdMult=sim.spdMult;S.gAng=sim.gAng;
+   S.j=sim.j;S.t=sim.t;S.spdMult=sim.spdMult;S.gAng=sim.gAng;S.midiIdx=sim.midiIdx;S.midiSpd=sim.midiSpd;
    finish(sim.winner);return;
   }
   if(S.state==='run'&&sim.t>=S.T){
    const m=M[S.mode];
    for(let i=sim.j;i<n;i++){rings[i].broken=true;ringBurst(rings[i],m,col(rings[i].k))}
-   S.j=n;S.t=sim.t;S.spdMult=sim.spdMult;S.gAng=sim.gAng;
+   S.j=n;S.t=sim.t;S.spdMult=sim.spdMult;S.gAng=sim.gAng;S.midiIdx=sim.midiIdx;S.midiSpd=sim.midiSpd;
    finish(0);return;
   }
  }
- S.j=sim.j;S.t=sim.t;S.spdMult=sim.spdMult;S.gAng=sim.gAng;
+ S.j=sim.j;S.t=sim.t;S.spdMult=sim.spdMult;S.gAng=sim.gAng;S.midiIdx=sim.midiIdx;S.midiSpd=sim.midiSpd;
  for(const rg of rings)if(rg.flash>0)rg.flash=Math.max(0,rg.flash-dt*5);
  for(const b of balls){b.trail.push({x:b.x,y:b.y,r:b.r});if(b.trail.length>24)b.trail.shift()}
 }
@@ -584,10 +711,32 @@ $('rst').onclick=()=>start(false);
 $('col').onclick=()=>newPal();
 $('vert').onchange=resize;
 $('sec').onchange=()=>start(false);
+$('early').onchange=()=>start(false);
 $('title').oninput=()=>{S.autoHook=false};
 $('hookBtn').onclick=()=>{S.autoHook=true;applyHook(true)};
 $('bamBtn').onclick=()=>{S.bam=!S.bam;$('bamBtn').classList.toggle('on',S.bam);start(false)};
 $('spiralBtn').onclick=()=>{S.spiral=!S.spiral;$('spiralBtn').classList.toggle('on',S.spiral);start(false)};
+$('midiBtn').onclick=()=>{unlockAudio();$('midiFile').click()};
+$('midiFile').onchange=async e=>{
+ const f=e.target.files[0];if(!f)return;
+ try{
+  const parsed=parseMidi(await f.arrayBuffer());
+  if(!parsed.length)throw new Error('У файлі немає нот');
+  midiSeq=parsed;
+  $('midiBtn').classList.add('on');
+  $('midiClr').style.display='';
+  $('midiInfo').textContent=`♪ ${f.name} (${parsed.length} нот/акордів)`;
+  start(false);
+ }catch(err){$('midiInfo').textContent='Помилка: '+err.message}
+ e.target.value='';
+};
+$('midiClr').onclick=()=>{
+ midiSeq=[];
+ $('midiBtn').classList.remove('on');
+ $('midiClr').style.display='none';
+ $('midiInfo').textContent='Стандартна гама';
+ start(false);
+};
 document.querySelectorAll('#presets [data-d]').forEach(b=>b.onclick=()=>{
  S.dens=+b.dataset.d;
  document.querySelectorAll('#presets [data-d]').forEach(x=>x.classList.toggle('on',x===b));
